@@ -57,6 +57,11 @@ models:
         tests:
           - not_null
           - accepted_values:
+              # WHY warn, not error: a new category showing up means someone
+              # added an event type to EVENT_TYPES without updating this seed
+              # — worth fixing, not worth paging anyone at 3am for.
+              config:
+                severity: warn
               arguments:
                 values: [code, collaboration, social]
 
@@ -74,26 +79,35 @@ models:
         description: Nullable — an event whose repo_id has no matching dim_repo row.
         tests:
           - relationships:
-              to: ref('dim_repo')
-              field: repo_key
+              # WHY warn: this FK is already documented as nullable/optional
+              # by design, so a violation here is worth investigating, not a
+              # guaranteed structural break the way a null actor_key would be.
+              config:
+                severity: warn
+              arguments:
+                to: ref('dim_repo')
+                field: repo_key
       - name: actor_key
         tests:
           - not_null
           - relationships:
-              to: ref('dim_actor')
-              field: actor_key
+              arguments:
+                to: ref('dim_actor')
+                field: actor_key
       - name: date_key
         tests:
           - not_null
           - relationships:
-              to: ref('dim_date')
-              field: date_key
+              arguments:
+                to: ref('dim_date')
+                field: date_key
       - name: event_type_key
         tests:
           - not_null
           - relationships:
-              to: ref('dim_event_type')
-              field: event_type_key
+              arguments:
+                to: ref('dim_event_type')
+                field: event_type_key
       - name: is_pr_merged
         tests:
           - not_null

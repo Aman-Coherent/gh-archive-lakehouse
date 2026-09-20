@@ -21,6 +21,11 @@ models:
               # WHY this exact list: matches EVENT_TYPES' default in
               # .env.example — bronze only ever contains these six types,
               # since ingest.py filters everything else out before it's written.
+              # WHY warn, not error: a mismatch here means EVENT_TYPES was
+              # changed without updating this list — a config drift worth
+              # fixing, not evidence the pipeline itself is broken.
+              config:
+                severity: warn
               arguments:
                 values:
                   - PushEvent

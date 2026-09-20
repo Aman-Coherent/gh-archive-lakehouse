@@ -14,6 +14,7 @@ import typer
 
 from pipeline.ingest import backfill as run_backfill
 from pipeline.ingest import ingest_hour
+from pipeline.quality import check_freshness
 
 app = typer.Typer()
 
@@ -81,6 +82,20 @@ def backfill(
     )
 
     if failed:
+        raise typer.Exit(code=1)
+
+
+@app.command(name="check-freshness")
+def check_freshness_command() -> None:
+    """Check whether gold data is fresh enough per FRESHNESS_SLA_HOURS.
+
+    Exit code 0 = fresh, 1 = stale. This is a separate claim from "did the
+    last job succeed" — a job can succeed and still leave stale data if it
+    simply hasn't run recently enough.
+    """
+    result = check_freshness()
+    typer.echo(result)
+    if not result.is_fresh:
         raise typer.Exit(code=1)
 
 
