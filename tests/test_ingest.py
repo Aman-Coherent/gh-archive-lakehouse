@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+import requests
 
 from pipeline import ingest as ingest_module
 from pipeline.ingest import ingest_hour, partition_path
@@ -130,3 +131,59 @@ def test_force_reingest_overwrites_rather_than_duplicates(
 
     assert second.status == "success"
     assert second.rows_kept == 2  # replaced, not appended to the first run's 1 row
+
+
+def test_retries_transient_network_error_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # WHY this test exists: a real 72-hour production backfill (Phase 7) hit
+    # exactly this — a connection that broke mid-download, self-healed by a
+    # fresh retry. Not a hypothetical edge case.
+    body = _gzip_lines([json.dumps(_make_event(1, "PushEvent"))])
+    call_count = 0
+
+    def _flaky_get(*_args: object, **_kwargs: object) -> _FakeResponse:
+        nonlocal call_count
+        call_count += 1
+        if call_count < 3:
+            raise requests.exceptions.ConnectionError("simulated transient network error")
+        return _FakeResponse(body)
+
+    monkeypatch.setattr(ingest_module.requests, "get", _flaky_get)
+    monkeypatch.setattr(ingest_module.time, "sleep", lambda _seconds: None)
+
+    result = ingest_hour(datetime(2024, 1, 15, 17))
+
+    assert result.status == "success"
+    assert result.rows_kept == 1
+    assert call_count == 3
+
+
+def test_gives_up_after_max_retries(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def _always_fails(*_args: object, **_kwargs: object) -> None:
+        raise requests.exceptions.ConnectionError("simulated persistent network error")
+
+    monkeypatch.setattr(ingest_module.requests, "get", _always_fails)
+    monkeypatch.setattr(ingest_module.time, "sleep", lambda _seconds: None)
+
+    result = ingest_hour(datetime(2024, 1, 15, 18))
+
+    assert result.status == "failed"
+    assert result.error_message is not None
+    assert "simulated persistent network error" in result.error_message
+
+
+def test_404_is_not_retried(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    call_count = 0
+
+    def _not_found(*_args: object, **_kwargs: object) -> _FakeResponse:
+        nonlocal call_count
+        call_count += 1
+        return _FakeResponse(b"", status_code=404)
+
+    monkeypatch.setattr(ingest_module.requests, "get", _not_found)
+
+    result = ingest_hour(datetime(2024, 1, 15, 19))
+
+    assert result.status == "failed"
+    assert call_count == 1  # not retried — a 404 won't fix itself

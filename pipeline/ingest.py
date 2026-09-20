@@ -56,6 +56,19 @@ BRONZE_SCHEMA = pa.schema(
 
 _GHARCHIVE_BASE_URL = "https://data.gharchive.org"
 
+# WHY retry at all: measured directly, not speculative — a real 72-hour
+# production backfill (Phase 7) hit exactly one transient "connection broken
+# mid-stream" network error out of 72 downloads (~1.4%). At that rate, an
+# hourly job with no retry would fail roughly once every three days on
+# network flakiness alone, for no reason related to the pipeline's own logic.
+_MAX_DOWNLOAD_ATTEMPTS = 3
+_RETRY_BACKOFF_SECONDS = 2
+
+
+class _UpstreamNotPublished(Exception):
+    """GH Archive hasn't published this hour's file yet (404) — not retried,
+    since retrying can't make a file exist before GitHub has written it."""
+
 
 @dataclass(frozen=True)
 class IngestResult:
@@ -128,13 +141,77 @@ def _flatten_event(raw: dict, *, source_file: str, ingested_at: datetime) -> dic
     }
 
 
+def _download_and_parse(
+    source_url: str, event_types: set[str], ingested_at: datetime
+) -> tuple[list[dict], int, int]:
+    """Download and parse one hour's file, retrying transient network errors.
+
+    Raises _UpstreamNotPublished immediately on 404 (not retried). Raises the
+    last network/parse error after exhausting retries for anything else — the
+    caller (ingest_hour) turns either into a status="failed" IngestResult.
+    """
+    last_error: Exception | None = None
+    for attempt in range(1, _MAX_DOWNLOAD_ATTEMPTS + 1):
+        try:
+            response = requests.get(source_url, stream=True, timeout=60)
+            if response.status_code == 404:
+                raise _UpstreamNotPublished(source_url)
+            response.raise_for_status()
+
+            rows_read = 0
+            malformed_rows = 0
+            records: list[dict] = []
+
+            # WHY gzip.GzipFile over response.raw, not response.iter_lines():
+            # this decompresses on the fly as bytes arrive, so the full
+            # ~100MB uncompressed hour is never buffered in memory at once —
+            # only the ~12-column rows we actually keep are.
+            with gzip.GzipFile(fileobj=response.raw) as gz_stream:
+                for raw_line in gz_stream:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    rows_read += 1
+                    try:
+                        raw_event = json.loads(line)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        malformed_rows += 1
+                        continue
+
+                    if raw_event.get("type") not in event_types:
+                        continue
+
+                    try:
+                        records.append(
+                            _flatten_event(
+                                raw_event, source_file=source_url, ingested_at=ingested_at
+                            )
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        malformed_rows += 1
+                        continue
+            return records, rows_read, malformed_rows
+        except _UpstreamNotPublished:
+            raise
+        except (requests.RequestException, gzip.BadGzipFile, OSError) as exc:
+            last_error = exc
+            if attempt < _MAX_DOWNLOAD_ATTEMPTS:
+                # WHY retry from scratch rather than resume: a gzip stream
+                # that broke mid-read can't be resumed from where it left
+                # off — a fresh request is the only correct recovery.
+                time.sleep(_RETRY_BACKOFF_SECONDS * attempt)
+
+    assert last_error is not None  # loop always returns or sets last_error
+    raise last_error
+
+
 def ingest_hour(dt: datetime, *, force: bool = False) -> IngestResult:
     """Download one GH Archive hour, project + flatten, write one Parquet partition.
 
     Never raises for expected failure modes (missing upstream file, corrupt
-    gzip, network error) — those come back as status="failed" with
-    error_message set, so a scheduler can log it and move on to the next hour
-    instead of crashing.
+    gzip, network error that persists past retries) — those come back as
+    status="failed" with error_message set, so a scheduler can log it and
+    move on to the next hour instead of crashing.
     """
     if (dt.minute, dt.second, dt.microsecond) != (0, 0, 0):
         raise ValueError(f"ingest_hour requires an exact hour boundary, got {dt!r}")
@@ -147,48 +224,19 @@ def ingest_hour(dt: datetime, *, force: bool = False) -> IngestResult:
         return IngestResult(hour=dt, status="skipped")
 
     source_url = _source_url(dt)
+    event_types = set(settings.event_types)
+    ingested_at = datetime.now(UTC).replace(tzinfo=None)
+
     try:
-        response = requests.get(source_url, stream=True, timeout=60)
-        if response.status_code == 404:
-            return IngestResult(
-                hour=dt,
-                status="failed",
-                error_message=f"upstream file not published (404): {source_url}",
-            )
-        response.raise_for_status()
-
-        event_types = set(settings.event_types)
-        ingested_at = datetime.now(UTC).replace(tzinfo=None)
-        rows_read = 0
-        malformed_rows = 0
-        records: list[dict] = []
-
-        # WHY gzip.GzipFile over response.raw, not response.iter_lines(): this
-        # decompresses on the fly as bytes arrive, so the full ~100MB
-        # uncompressed hour is never buffered in memory at once — only the
-        # ~12-column rows we actually keep are.
-        with gzip.GzipFile(fileobj=response.raw) as gz_stream:
-            for raw_line in gz_stream:
-                line = raw_line.strip()
-                if not line:
-                    continue
-                rows_read += 1
-                try:
-                    raw_event = json.loads(line)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    malformed_rows += 1
-                    continue
-
-                if raw_event.get("type") not in event_types:
-                    continue
-
-                try:
-                    records.append(
-                        _flatten_event(raw_event, source_file=source_url, ingested_at=ingested_at)
-                    )
-                except (KeyError, TypeError, ValueError):
-                    malformed_rows += 1
-                    continue
+        records, rows_read, malformed_rows = _download_and_parse(
+            source_url, event_types, ingested_at
+        )
+    except _UpstreamNotPublished:
+        return IngestResult(
+            hour=dt,
+            status="failed",
+            error_message=f"upstream file not published (404): {source_url}",
+        )
     except (requests.RequestException, gzip.BadGzipFile, OSError) as exc:
         return IngestResult(hour=dt, status="failed", error_message=str(exc))
 
