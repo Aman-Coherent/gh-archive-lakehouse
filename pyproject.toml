@@ -29,6 +29,14 @@ dependencies = [
     "plotly==7.1.0",
 ]
 
+[project.optional-dependencies]
+# WHY: only needed to execute the one-off exploration notebook (Phase 1),
+# not by the running pipeline — kept out of core dependencies on purpose.
+notebook = [
+    "ipykernel==7.3.0",
+    "nbconvert==7.17.1",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
