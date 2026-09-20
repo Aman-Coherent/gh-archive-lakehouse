@@ -1,0 +1,108 @@
+version: 2
+
+models:
+  - name: stg_events
+    description: >
+      One row per deduplicated, cleaned GitHub event. Grain: one row per
+      event_id. Reads bronze, drops duplicate event_ids (keeping the most
+      recently ingested copy), casts types, trims strings, and splits
+      repo_name into owner/short-name.
+    columns:
+      - name: event_id
+        description: Unique GitHub event ID, from GH Archive's own event id.
+        tests:
+          - unique
+          - not_null
+      - name: event_type
+        description: The GitHub event type, e.g. PushEvent, PullRequestEvent.
+        tests:
+          - not_null
+          - accepted_values:
+              # WHY this exact list: matches EVENT_TYPES' default in
+              # .env.example — bronze only ever contains these six types,
+              # since ingest.py filters everything else out before it's written.
+              arguments:
+                values:
+                  - PushEvent
+                  - PullRequestEvent
+                  - IssuesEvent
+                  - IssueCommentEvent
+                  - WatchEvent
+                  - ForkEvent
+      - name: created_at
+        description: UTC timestamp the event occurred, from GitHub.
+        tests:
+          - not_null
+      - name: actor_id
+        description: GitHub user ID of the actor who triggered the event.
+        tests:
+          - not_null
+      - name: actor_login
+        description: GitHub username of the actor, trimmed.
+        tests:
+          - not_null
+      - name: repo_id
+        description: >
+          GitHub repository ID. Measured as 100% present across ~4.6M real
+          bronze rows (Phase 3/4) for the six event types this pipeline
+          keeps, even though it's nullable at the bronze schema level.
+        tests:
+          - not_null
+      - name: repo_name
+        description: Lowercased, trimmed "owner/name" repository name.
+      - name: repo_owner
+        description: The "owner" segment of repo_name.
+      - name: repo_short_name
+        description: The "name" segment of repo_name.
+      - name: org_id
+        description: GitHub organization ID, nullable (not every event has an org).
+      - name: action
+        description: >
+          payload.action from the source event, nullable. For
+          PullRequestEvent specifically, action="merged" is how this
+          pipeline determines a PR was merged (see ADR-001 — the upstream
+          payload.pull_request.merged boolean no longer exists).
+      - name: pr_number
+        description: Pull request number, nullable (only set for PullRequestEvent).
+      - name: issue_number
+        description: Issue number, nullable (only set for issue-related events).
+      - name: event_date
+        description: created_at's date, UTC. Used for daily aggregation and partitioning.
+        tests:
+          - not_null
+      - name: event_hour
+        description: created_at's hour (0-23), UTC.
+        tests:
+          - not_null
+      - name: ingested_at
+        description: When this pipeline ingested the event (lineage column).
+      - name: source_file
+        description: The GH Archive URL this event was read from (lineage column).
+
+  - name: stg_repos
+    description: >
+      One row per repository per day, with the name observed most recently
+      that day. Feeds dim_repo's SCD2 snapshot in Phase 5.
+    columns:
+      - name: repo_id
+        tests:
+          - not_null
+      - name: event_date
+        tests:
+          - not_null
+      - name: repo_name
+        tests:
+          - not_null
+
+  - name: stg_actors
+    description: >
+      One row per GitHub actor, with the most recently observed login
+      (SCD Type 1 — no history kept).
+    columns:
+      - name: actor_id
+        tests:
+          - unique
+          - not_null
+      - name: actor_login
+        tests:
+          - not_null

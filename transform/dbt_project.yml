@@ -1,0 +1,32 @@
+name: "gh_archive_lakehouse"
+version: "1.0.0"
+config-version: 2
+
+profile: "gh_archive_lakehouse"
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+snapshot-paths: ["snapshots"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# WHY vars, not hardcoded paths: the same models run against a local dev
+# checkout and against CI/prod (R2) — see profiles.yml for how BRONZE_ROOT /
+# SILVER_ROOT resolve differently per target.
+vars:
+  bronze_root: "{{ env_var('BRONZE_ROOT', '../data/bronze') }}"
+  silver_root: "{{ env_var('SILVER_ROOT', '../data/silver') }}"
+
+models:
+  gh_archive_lakehouse:
+    staging:
+      # WHY external, not DuckDB's default table materialization: the spec's
+      # architecture stores silver as Parquet files (so other tools — the
+      # dashboard, a future non-dbt job — can read it without going through
+      # dbt), not as tables locked inside one DuckDB database file.
+      +materialized: external

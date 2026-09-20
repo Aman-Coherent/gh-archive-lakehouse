@@ -1,0 +1,30 @@
+# In-repo dbt profile (run dbt with --profiles-dir . from transform/, or set
+# DBT_PROFILES_DIR=transform). WHY in-repo rather than ~/.dbt/profiles.yml:
+# the project must be runnable from a clean clone with no machine-specific
+# setup beyond `pip install` and environment variables — a profile living
+# outside the repo would break that.
+gh_archive_lakehouse:
+  target: dev
+  outputs:
+    # Local dev: bronze/silver are plain files on disk, no credentials needed.
+    dev:
+      type: duckdb
+      path: "gh_archive_lakehouse.duckdb"
+      threads: 4
+
+    # CI/prod: reads/writes through Cloudflare R2 via DuckDB's httpfs (S3-
+    # compatible) extension. WHY unverified here: no live R2 account exists
+    # yet at this point in the build — this target is structurally correct
+    # per DuckDB's documented R2 setup, but only `dev` has actually been run.
+    prod:
+      type: duckdb
+      path: "gh_archive_lakehouse.duckdb"
+      threads: 4
+      extensions:
+        - httpfs
+      settings:
+        s3_region: auto
+        s3_endpoint: "{{ env_var('R2_ACCOUNT_ID', '') }}.r2.cloudflarestorage.com"
+        s3_access_key_id: "{{ env_var('R2_ACCESS_KEY_ID', '') }}"
+        s3_secret_access_key: "{{ env_var('R2_SECRET_ACCESS_KEY', '') }}"
+        s3_url_style: path

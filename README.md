@@ -61,9 +61,20 @@ rationale, data model, quality approach, local setup, and scale discussion) in
 ```bash
 py -3.12 -m venv .venv
 .venv\Scripts\activate
-pip install -e .
+pip install -e ".[notebook]"
 cp .env.example .env   # defaults to STORAGE_BACKEND=local, no cloud account needed
 python -c "from pipeline.config import Settings; print(Settings.load())"
+
+python -m pipeline.cli ingest --hour 2024-01-15T12   # writes data/bronze/...
+
+# WHY this mkdir is needed: DuckDB's COPY TO (which dbt-duckdb's "external"
+# materialization uses under the hood) does not create missing parent
+# directories — confirmed directly in Phase 4, not assumed. `dbt run` will
+# fail with an IO Error until this exists at least once.
+mkdir -p data/silver
+cd transform
+dbt run --select staging --profiles-dir .
+dbt test --select staging --profiles-dir .
 ```
 
 ## Project status
