@@ -16,6 +16,10 @@ dependencies = [
     "boto3<1.43.76",
     "fsspec==2026.9.0",
     "s3fs==2026.9.0",
+    # WHY explicit pin, not left implicit: pipeline/storage.py imports pyarrow
+    # directly for Parquet writes — it was only present before as an incidental
+    # transitive dependency of streamlit, which core ingest code shouldn't rely on.
+    "pyarrow==25.0.1",
     # Ingest
     "requests==2.34.2",
     # CLI + config
