@@ -2,7 +2,8 @@
     config(
         materialized='incremental',
         unique_key='event_id',
-        location=var('gold_root') ~ '/fact_events.parquet'
+        location=var('gold_root') ~ '/fact_events.parquet',
+        post_hook="COPY (SELECT * FROM {{ this }}) TO '" ~ var('gold_root') ~ "/fact_events.parquet' (FORMAT PARQUET, COMPRESSION ZSTD)"
     )
 }}
 
