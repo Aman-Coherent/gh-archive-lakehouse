@@ -49,10 +49,21 @@ models:
       - name: repo_id
         description: >
           GitHub repository ID. Measured as 100% present across ~4.6M real
-          bronze rows (Phase 3/4) for the six event types this pipeline
-          keeps, even though it's nullable at the bronze schema level.
+          bronze rows in local testing (Phase 3/4), but the very first live
+          unattended run in Phase 7 hit one real event with a null repo_id
+          anyway — a large sample lowers how surprising a rare case is, it
+          doesn't rule it out. Nullable at the bronze schema level for
+          exactly this reason.
         tests:
-          - not_null
+          - not_null:
+              # WHY warn, not error: this is a legitimate (if rare) shape
+              # of real GitHub event data, not a broken pipeline — confirmed
+              # by the very first live run failing here, hard, and blocking
+              # everything downstream over one row. A pipeline built to
+              # "run without you" (Phase 7) can't hard-fail on a data shape
+              # that's expected to occasionally occur.
+              config:
+                severity: warn
       - name: repo_name
         description: Lowercased, trimmed "owner/name" repository name.
       - name: repo_owner
