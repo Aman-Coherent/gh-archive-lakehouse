@@ -1,0 +1,147 @@
+version: 2
+
+models:
+  - name: dim_repo
+    description: >
+      SCD Type 2 dimension: one row per repository per distinct version of
+      its (repo_name, repo_owner). repo_key is per-version, not per-repo —
+      fact_events joins on it via a point-in-time match, not a plain lookup.
+    columns:
+      - name: repo_key
+        tests:
+          - unique
+          - not_null
+      - name: repo_id
+        tests:
+          - not_null
+      - name: valid_from
+        tests:
+          - not_null
+
+  - name: dim_actor
+    description: SCD Type 1 dimension, one row per GitHub actor, latest login wins.
+    columns:
+      - name: actor_key
+        tests:
+          - unique
+          - not_null
+      - name: actor_id
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_date
+    description: Generated calendar, 2015-01-01 through 2030-12-31.
+    columns:
+      - name: date_key
+        tests:
+          - unique
+          - not_null
+      - name: date_day
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_event_type
+    description: Static lookup of GitHub event types, from seeds/event_types.csv.
+    columns:
+      - name: event_type_key
+        tests:
+          - unique
+          - not_null
+      - name: event_type
+        tests:
+          - unique
+          - not_null
+      - name: category
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [code, collaboration, social]
+
+  - name: fact_events
+    description: >
+      Grain: one row per GitHub event. Foreign keys to dim_repo (point-in-time
+      join on repo_id + valid_from/valid_to), dim_actor, dim_date,
+      dim_event_type. commit_count is intentionally absent — see ADR-001.
+    columns:
+      - name: event_id
+        tests:
+          - unique
+          - not_null
+      - name: repo_key
+        description: Nullable — an event whose repo_id has no matching dim_repo row.
+        tests:
+          - relationships:
+              to: ref('dim_repo')
+              field: repo_key
+      - name: actor_key
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_actor')
+              field: actor_key
+      - name: date_key
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+      - name: event_type_key
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_event_type')
+              field: event_type_key
+      - name: is_pr_merged
+        tests:
+          - not_null
+
+  - name: mart_daily_repo_activity
+    description: >
+      Grain: one row per (repo_id, date_key, category). Per-repo daily
+      activity counts, split by event category.
+    columns:
+      - name: repo_id
+        tests:
+          - not_null
+      - name: event_count
+        tests:
+          - not_null
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+            - repo_id
+            - date_key
+            - category
+
+  - name: mart_pr_lifecycle
+    description: >
+      Grain: one row per merged PR (within the current bronze/silver
+      retention window — see int_pr_lifecycle for why older PRs can be
+      absent, not wrong).
+    columns:
+      - name: hours_to_merge
+        tests:
+          - not_null
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+            - repo_id
+            - pr_number
+
+  - name: mart_hourly_volume
+    description: "Grain: one row per (date_key, event_hour). Feeds the Phase 9 ops/status page."
+    columns:
+      - name: event_count
+        tests:
+          - not_null
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+            - date_key
+            - event_hour

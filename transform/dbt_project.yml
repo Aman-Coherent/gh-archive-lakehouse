@@ -21,6 +21,11 @@ clean-targets:
 vars:
   bronze_root: "{{ env_var('BRONZE_ROOT', '../data/bronze') }}"
   silver_root: "{{ env_var('SILVER_ROOT', '../data/silver') }}"
+  # WHY gold gets its own var too: gold is retained forever per the spec's
+  # tiered retention design, unlike bronze/silver — it needs to resolve to
+  # R2 in prod exactly like the others, just with its own path and its own
+  # (absent) TTL in retention.py, Phase 7.
+  gold_root: "{{ env_var('GOLD_ROOT', '../data/gold') }}"
 
 models:
   gh_archive_lakehouse:
@@ -29,4 +34,12 @@ models:
       # architecture stores silver as Parquet files (so other tools — the
       # dashboard, a future non-dbt job — can read it without going through
       # dbt), not as tables locked inside one DuckDB database file.
+      +materialized: external
+    intermediate:
+      # WHY table, not external: intermediate models are internal plumbing
+      # shared between other dbt models (Phase 5's teach step covers why —
+      # a join used by 2+ downstream models, computed once), not part of the
+      # "gold, retained forever, externally readable" contract gold itself is.
+      +materialized: table
+    marts:
       +materialized: external

@@ -1,0 +1,23 @@
+version: 2
+
+models:
+  - name: int_pr_lifecycle
+    description: >
+      Grain: one row per merged PR with a matching "opened" event still
+      present in stg_events. Shared by fact_events (hours_to_merge on the
+      merge-event row) and mart_pr_lifecycle (percentiles by repo) so the
+      self-join is computed exactly once.
+    columns:
+      - name: merge_event_id
+        tests:
+          - unique
+          - not_null
+      - name: hours_to_merge
+        tests:
+          - not_null
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+            - repo_id
+            - pr_number

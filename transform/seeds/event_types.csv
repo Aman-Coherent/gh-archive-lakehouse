@@ -1,0 +1,7 @@
+event_type,description,category
+PushEvent,Commits were pushed to a repository branch,code
+PullRequestEvent,A pull request was opened closed merged or otherwise updated,code
+IssuesEvent,An issue was opened closed or otherwise updated,collaboration
+IssueCommentEvent,A comment was added to an issue or pull request,collaboration
+WatchEvent,A user starred a repository,social
+ForkEvent,A repository was forked,social
