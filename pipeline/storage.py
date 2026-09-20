@@ -9,6 +9,7 @@ branch only has to happen once, here, at construction time.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 import fsspec
 import pyarrow as pa
@@ -24,7 +25,17 @@ class Storage:
         self._backend = settings.storage_backend
         if self._backend == "local":
             self._fs = fsspec.filesystem("file")
-            self._root = settings.local_data_root
+            # WHY resolve to an absolute path immediately: fsspec's
+            # LocalFileSystem.find() always returns absolute, OS-normalized
+            # paths regardless of what root you pass it. LOCAL_DATA_ROOT
+            # defaults to the relative "./data" — stripping that literal
+            # relative string's length off an absolute result silently cuts
+            # the wrong characters (confirmed directly: it produced a
+            # mangled path like ".../data/s/aman/..." instead of
+            # ".../data/bronze/..."). Resolving once here keeps self._root
+            # consistent with what find() actually returns everywhere else
+            # in this class.
+            self._root = Path(settings.local_data_root).resolve().as_posix()
         else:
             # WHY: Cloudflare R2 speaks the S3 API, so s3fs works against it
             # unmodified — only the endpoint URL differs from real AWS S3.
@@ -70,6 +81,9 @@ class Storage:
 
     def exists(self, path: str) -> bool:
         return bool(self._fs.exists(self._full_path(path)))
+
+    def size(self, path: str) -> int:
+        return int(self._fs.size(self._full_path(path)))
 
     def list_partitions(self, prefix: str) -> list[str]:
         """List partition files under a prefix, as backend-relative paths."""

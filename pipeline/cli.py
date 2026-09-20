@@ -1,10 +1,4 @@
-"""Command-line entry points for the pipeline.
-
-WHY `retention` doesn't exist yet: the build spec's eventual CLI also has a
-`retention` command, but it wraps a function that doesn't exist until
-Phase 7 — adding a stub command now would violate "no stubbed functions,
-ships complete and working."
-"""
+"""Command-line entry points for the pipeline."""
 
 from __future__ import annotations
 
@@ -15,6 +9,7 @@ import typer
 from pipeline.ingest import backfill as run_backfill
 from pipeline.ingest import ingest_hour
 from pipeline.quality import check_freshness
+from pipeline.retention import enforce_retention
 
 app = typer.Typer()
 
@@ -97,6 +92,13 @@ def check_freshness_command() -> None:
     typer.echo(result)
     if not result.is_fresh:
         raise typer.Exit(code=1)
+
+
+@app.command()
+def retention() -> None:
+    """Delete bronze partitions older than BRONZE_RETENTION_DAYS. Gold is never touched."""
+    result = enforce_retention()
+    typer.echo(result)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,54 @@
+name: Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "First hour to backfill, e.g. 2024-01-15T00 (UTC)"
+        required: true
+      end_date:
+        description: "Last hour to backfill, inclusive (UTC)"
+        required: true
+      force:
+        description: "Re-ingest even if partitions already exist"
+        type: boolean
+        default: false
+
+# WHY the same group as ingest_hourly.yml: both write to the same bronze
+# partitions — a manual backfill overlapping the hourly cron is exactly the
+# race this guard exists to prevent, so they share one queue.
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Backfill
+        env:
+          STORAGE_BACKEND: local
+        run: |
+          python -m pipeline.cli backfill \
+            --start "${{ inputs.start_date }}" \
+            --end "${{ inputs.end_date }}" \
+            ${{ inputs.force == 'true' && '--force' || '' }}
+
+      - name: dbt build
+        working-directory: transform
+        env:
+          STORAGE_BACKEND: local
+        run: |
+          mkdir -p ../data/silver ../data/gold
+          dbt deps --profiles-dir .
+          dbt build --profiles-dir . --target dev

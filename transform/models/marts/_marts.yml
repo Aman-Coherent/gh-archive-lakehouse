@@ -75,6 +75,10 @@ models:
         tests:
           - unique
           - not_null
+      - name: ingested_at
+        description: Incremental watermark column — see fact_events.sql for why.
+        tests:
+          - not_null
       - name: repo_key
         description: Nullable — an event whose repo_id has no matching dim_repo row.
         tests:

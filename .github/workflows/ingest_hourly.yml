@@ -1,0 +1,71 @@
+name: Hourly Ingest
+
+# WHY cron '15 * * * *' fetching T-2h, not the hour that just ended: GH
+# Archive publishes an hour's file with a real delay after that hour ends.
+# Asking for the hour that just ended at :15 intermittently 404s — asking
+# for the hour before that one gives it a full extra hour to actually land.
+on:
+  schedule:
+    - cron: "15 * * * *"
+  workflow_dispatch:
+
+# WHY this guard: an hourly cron firing while a previous run (or a manual
+# backfill) is still in progress could write to overlapping partitions at
+# the same time. cancel-in-progress: false means the second run waits its
+# turn instead of killing work already in flight.
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Compute target hour (T-2h)
+        id: target_hour
+        run: echo "hour=$(date -u -d '2 hours ago' +'%Y-%m-%dT%H')" >> "$GITHUB_OUTPUT"
+
+      # WHY STORAGE_BACKEND is hardcoded to local for now: no Cloudflare R2
+      # account exists yet. Data won't persist between runs until it does —
+      # this proves the orchestration mechanics (schedule, T-2h lag, dbt
+      # build, freshness check) work correctly. Once R2_* secrets are added,
+      # change this to "r2" and nothing else in this workflow needs to change.
+      - name: Ingest
+        env:
+          STORAGE_BACKEND: local
+        run: python -m pipeline.cli ingest --hour "${{ steps.target_hour.outputs.hour }}"
+
+      - name: dbt build
+        working-directory: transform
+        env:
+          STORAGE_BACKEND: local
+        run: |
+          mkdir -p ../data/silver ../data/gold
+          dbt deps --profiles-dir .
+          dbt build --profiles-dir . --target dev
+
+      - name: Check freshness
+        env:
+          STORAGE_BACKEND: local
+        run: python -m pipeline.cli check-freshness
+
+      - name: Retention
+        env:
+          STORAGE_BACKEND: local
+        run: python -m pipeline.cli retention
+
+      # WHY no alerting step yet: pipeline/runlog.py and real email alerting
+      # are Phase 8 deliverables that don't exist yet — a step calling code
+      # that isn't written would be exactly the kind of stub this build
+      # avoids. `if: failure()` steps here would just be a bare echo, which
+      # isn't a real alert either. This gets built properly in Phase 8.

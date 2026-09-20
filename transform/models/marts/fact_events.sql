@@ -1,6 +1,7 @@
 {{
     config(
-        materialized='external',
+        materialized='incremental',
+        unique_key='event_id',
         location=var('gold_root') ~ '/fact_events.parquet'
     )
 }}
@@ -22,15 +23,26 @@
 -- so repo_key depends on *when* the event happened, not just repo_id) and
 -- genuinely requires the point-in-time join below.
 --
--- KNOWN SCOPE LIMIT, to be resolved in Phase 7: this model is a full
--- rebuild from stg_events every run, and stg_events only ever contains
--- whatever's currently in bronze/silver. That's fine today because nothing
--- deletes old bronze partitions yet — but once Phase 7's retention job
--- starts enforcing BRONZE_RETENTION_DAYS, a full rebuild would silently
--- lose gold history older than that window, contradicting "gold is
--- retained forever." Phase 7 needs to make this (and the time-based
--- aggregate marts) incremental — append-only for new events, not a full
--- replace — as part of building retention itself, not as an afterthought.
+-- RESOLVED IN PHASE 7 (was flagged as a known gap in Phase 5): this model
+-- is now incremental, not a full rebuild — each run only processes events
+-- whose ingested_at is newer than what's already in this table, and
+-- unique_key='event_id' means a force=true re-ingest correction *replaces*
+-- the existing row for that event rather than duplicating it (verified
+-- directly: a synthetic incremental+external+unique_key test correctly
+-- replaced a changed key and appended a new one, not both).
+--
+-- WHY ingested_at as the watermark, not created_at: a backfill of an old
+-- hour processed today has an old created_at but a today's ingested_at.
+-- Filtering on created_at would silently skip backfilled history that
+-- arrives after fact_events has already moved past that date — exactly
+-- the "late-arriving data" problem this whole phase is about. ingested_at
+-- always reflects "when THIS pipeline touched the row," so it's
+-- monotonically safe to use as a high-watermark regardless of backfill order.
+--
+-- WHY mart_daily_repo_activity and mart_hourly_volume needed no changes to
+-- fix the same problem: they already ref() this table, not stg_events
+-- directly, so they inherit durability for free once this model has it.
+-- mart_pr_lifecycle *did* need a change — see that model for why.
 
 with events as (
     select * from {{ ref('stg_events') }}
@@ -44,6 +56,7 @@ select
     events.event_id,
     events.event_type,
     events.created_at,
+    events.ingested_at,
 
     -- foreign keys
     dim_repo.repo_key,
@@ -83,3 +96,7 @@ left join {{ ref('dim_repo') }} as dim_repo
     and events.created_at < coalesce(dim_repo.valid_to, timestamp '9999-12-31')
 left join pr_lifecycle
     on events.event_id = pr_lifecycle.merge_event_id
+
+{% if is_incremental() %}
+where events.ingested_at > (select coalesce(max(ingested_at), timestamp '1900-01-01') from {{ this }})
+{% endif %}

@@ -1,0 +1,41 @@
+name: CI
+
+# WHY dbt parse + dbt compile on every PR: both catch broken SQL — a bad
+# ref(), a typo'd Jinja var, a syntax error — before it ever reaches the
+# hourly cron. Without this, the first place a broken model would show up
+# is a failed production run at 3am, not a red check on the PR that
+# introduced it.
+on:
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: ruff
+        run: ruff check .
+
+      - name: pytest
+        run: pytest tests/ -v
+
+      - name: dbt deps
+        working-directory: transform
+        run: dbt deps --profiles-dir .
+
+      - name: dbt parse
+        working-directory: transform
+        run: dbt parse --profiles-dir . --target dev
+
+      - name: dbt compile
+        working-directory: transform
+        run: dbt compile --profiles-dir . --target dev
