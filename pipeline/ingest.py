@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import gzip
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 import pyarrow as pa
@@ -201,3 +203,65 @@ def ingest_hour(dt: datetime, *, force: bool = False) -> IngestResult:
         malformed_rows=malformed_rows,
         bytes_written=bytes_written,
     )
+
+
+# WHY 0.25s: bounded concurrency (below) already caps simultaneous downloads at
+# `workers`, but staggering *submissions* too means the request rate never
+# spikes even for an instant — GH Archive is free, public infrastructure with
+# no login and no rate limit of its own, so nothing stops us from hammering it
+# except restraint we impose on ourselves.
+_BACKFILL_SUBMIT_DELAY_SECONDS = 0.25
+
+
+def _hour_range(start: datetime, end: datetime) -> list[datetime]:
+    if (start.minute, start.second, start.microsecond) != (0, 0, 0):
+        raise ValueError(f"backfill start requires an exact hour boundary, got {start!r}")
+    if (end.minute, end.second, end.microsecond) != (0, 0, 0):
+        raise ValueError(f"backfill end requires an exact hour boundary, got {end!r}")
+    if start > end:
+        raise ValueError(f"backfill start ({start}) must not be after end ({end})")
+
+    hours = []
+    current = start
+    while current <= end:
+        hours.append(current)
+        current += timedelta(hours=1)
+    return hours
+
+
+def backfill(
+    start: datetime, end: datetime, *, workers: int = 4, force: bool = False
+) -> list[IngestResult]:
+    """Ingest every hour in [start, end] (inclusive), with bounded concurrency.
+
+    WHY this just loops ingest_hour(): backfill and the scheduled hourly run
+    must apply identical rules — a separate "bulk" code path risks silently
+    drifting from the single-hour path over time, producing historical data
+    that doesn't match what the live job would have written for that hour.
+
+    Resumability comes for free from Phase 2's idempotency: an hour whose
+    partition already exists is skipped, not re-downloaded, so re-running this
+    with the same range after a partial failure or interruption only does the
+    work that's still missing.
+    """
+    hours = _hour_range(start, end)
+    results: list[IngestResult] = []
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {}
+        for dt in hours:
+            futures[executor.submit(ingest_hour, dt, force=force)] = dt
+            time.sleep(_BACKFILL_SUBMIT_DELAY_SECONDS)
+
+        for future in as_completed(futures):
+            dt = futures[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:  # noqa: BLE001
+                # WHY catch broadly here: one hour's unexpected bug must not
+                # crash a 24-hour backfill and lose the results already
+                # collected for every other hour that succeeded.
+                results.append(IngestResult(hour=dt, status="failed", error_message=str(exc)))
+
+    results.sort(key=lambda r: r.hour)
+    return results
