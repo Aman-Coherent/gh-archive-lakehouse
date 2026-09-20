@@ -1,0 +1,29 @@
+# Secrets — never commit real values, only .env.example
+.env
+
+# Local data lake and DuckDB files
+data/
+*.duckdb
+*.duckdb.wal
+
+# dbt
+target/
+dbt_packages/
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local Claude Code state
+.claude/

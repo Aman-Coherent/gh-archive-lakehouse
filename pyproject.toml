@@ -1,0 +1,44 @@
+[project]
+name = "gh-archive-lakehouse"
+version = "0.1.0"
+description = "A tiered-retention lakehouse built on GH Archive, DuckDB, dbt, and Cloudflare R2."
+requires-python = ">=3.12,<3.13"
+readme = "README.md"
+dependencies = [
+    # Compute + transform
+    "duckdb==1.5.5",
+    "dbt-core==1.12.5",
+    "dbt-duckdb==1.11.0",
+    # Object storage (local + R2, both via the fsspec interface)
+    # WHY: unpinned boto3 pulls a botocore too new for s3fs's aiobotocore
+    # dependency, and pip silently resolves s3fs down to the ancient 0.4.2
+    # to route around the conflict. Verified by dependency-resolution dry run.
+    "boto3<1.43.76",
+    "fsspec==2026.9.0",
+    "s3fs==2026.9.0",
+    # Ingest
+    "requests==2.34.2",
+    # CLI + config
+    "typer==0.27.2",
+    "python-dotenv==1.2.3",
+    # Dev / quality
+    "pytest==9.1.1",
+    "ruff==0.16.8",
+    # Dashboard
+    "streamlit==1.64.0",
+    "plotly==7.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pipeline"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
