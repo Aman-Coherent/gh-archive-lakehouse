@@ -171,6 +171,10 @@ dbt deps --profiles-dir .
 dbt build --profiles-dir . --target dev
 cd ..
 
+# optional: only the real hourly workflow calls this automatically — run it
+# once locally if you want the dashboard's "dbt test pass rate" populated
+python -m pipeline.cli record-dbt-results --path transform/target/run_results.json
+
 streamlit run dashboard/app.py    # http://localhost:8501
 ```
 

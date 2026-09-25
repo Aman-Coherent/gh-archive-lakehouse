@@ -55,6 +55,19 @@ def _query(sql: str) -> pd.DataFrame:
     return con.execute(sql).fetchdf()
 
 
+def _glob_has_files(path_glob: str) -> bool:
+    # WHY this guard exists: DuckDB's read_parquet() raises an IO Error when
+    # a glob matches zero files (confirmed directly, not assumed) — real for
+    # gold/ops/dbt_test_results/ on a fresh clone that followed this
+    # project's own documented local-setup steps, which build gold via
+    # `dbt build` but never call `pipeline.cli record-dbt-results` (that
+    # only happens inside the real GitHub Actions workflow). DuckDB's
+    # glob() function, unlike read_parquet(), tolerates zero matches.
+    con = connect()
+    result = con.execute(f"select count(*) from glob('{path_glob}')").fetchone()
+    return bool(result and result[0] > 0)
+
+
 @st.cache_data(ttl=_CACHE_TTL_SECONDS)
 def load_daily_repo_activity() -> pd.DataFrame:
     activity = gold_path("mart_daily_repo_activity.parquet")
@@ -97,7 +110,17 @@ def load_hourly_volume() -> pd.DataFrame:
 @st.cache_data(ttl=_CACHE_TTL_SECONDS)
 def load_pr_lifecycle() -> pd.DataFrame:
     path = gold_path("mart_pr_lifecycle.parquet")
-    return _query(f"select * from read_parquet('{path}')")
+    df = _query(f"select * from read_parquet('{path}')")
+    # WHY drop rows where merged_at is null: found by actually testing this
+    # against a fresh clone with only one hour of real data — when a plain
+    # (non-aggregated) external dbt-duckdb model's query returns zero rows,
+    # the exported Parquet file gets one spurious all-null row instead of
+    # genuinely zero rows (confirmed directly: the underlying DuckDB
+    # relation dbt tested against had 0 rows; the physical file had 1, all
+    # null — the two disagreed). A row with no real merge data would also
+    # break pandas' NaT-vs-date comparisons further down, so it's dropped
+    # here, once, rather than defended against in every place this is used.
+    return df[df["merged_at"].notna()]
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS)
@@ -109,12 +132,16 @@ def load_pipeline_health() -> pd.DataFrame:
 @st.cache_data(ttl=_CACHE_TTL_SECONDS)
 def load_recent_runs(limit: int = 48) -> pd.DataFrame:
     path = gold_path("ops/pipeline_runs/*.parquet")
+    if not _glob_has_files(path):
+        return pd.DataFrame()
     return _query(f"select * from read_parquet('{path}') order by started_at desc limit {limit}")
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS)
 def load_latest_dbt_results() -> pd.DataFrame:
     path = gold_path("ops/dbt_test_results/*.parquet")
+    if not _glob_has_files(path):
+        return pd.DataFrame()
     return _query(f"select * from read_parquet('{path}') order by recorded_at desc limit 1")
 
 

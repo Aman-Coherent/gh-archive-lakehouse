@@ -88,6 +88,18 @@ SQL alone.
   this project produced a real file, only the incremental one didn't). The
   fix is a `post_hook` that re-exports the full table after every run —
   see `fact_events.sql` for the exact mechanism.
+- **A plain (non-aggregated) external model whose query returns zero rows
+  writes one spurious all-null row to Parquet, not zero rows** — found
+  running Phase 9's fresh-clone acceptance test against a single hour of
+  real data with no merged PRs in it. `int_pr_lifecycle`'s underlying
+  DuckDB relation genuinely had 0 rows (dbt's own `not_null` test against
+  it correctly passed), but `mart_pr_lifecycle.parquet` — built directly
+  from that same empty result — ended up with exactly one row, every
+  column null. The two disagreed, which means a dbt test passing doesn't
+  guarantee the exported file it's "testing" is what actually shipped, for
+  this specific case. Worked around at the consumer, not the source:
+  `dashboard/app.py`'s `load_pr_lifecycle()` drops rows with a null
+  `merged_at` before anything downstream sees them.
 - **`current_timestamp` in DuckDB reflects the local system timezone**, not
   UTC. Every model comparing against this project's stored (naive, but
   semantically UTC) timestamps uses `current_timestamp AT TIME ZONE 'UTC'`
