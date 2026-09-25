@@ -40,32 +40,71 @@ jobs:
       # this proves the orchestration mechanics (schedule, T-2h lag, dbt
       # build, freshness check) work correctly. Once R2_* secrets are added,
       # change this to "r2" and nothing else in this workflow needs to change.
+      #
+      # WHY `| tee step.log` on every step below: GitHub Actions runners use
+      # `bash -eo pipefail` by default for `run:` steps, so the tee doesn't
+      # swallow a failing exit code — it just also captures the last output
+      # to a file the "Alert on failure" step can read, since there's no
+      # clean way to pull "this step's own output" back out of the live log
+      # otherwise.
       - name: Ingest
+        id: ingest
         env:
           STORAGE_BACKEND: local
-        run: python -m pipeline.cli ingest --hour "${{ steps.target_hour.outputs.hour }}"
+        run: |
+          python -m pipeline.cli ingest --hour "${{ steps.target_hour.outputs.hour }}" \
+            2>&1 | tee ingest.log
 
       - name: dbt build
+        id: dbt_build
         working-directory: transform
         env:
           STORAGE_BACKEND: local
         run: |
           mkdir -p ../data/silver ../data/gold
-          dbt deps --profiles-dir .
-          dbt build --profiles-dir . --target dev
+          dbt deps --profiles-dir . 2>&1 | tee ../dbt_build.log
+          dbt build --profiles-dir . --target dev 2>&1 | tee -a ../dbt_build.log
 
       - name: Check freshness
+        id: check_freshness
         env:
           STORAGE_BACKEND: local
-        run: python -m pipeline.cli check-freshness
+        run: python -m pipeline.cli check-freshness 2>&1 | tee check_freshness.log
 
       - name: Retention
+        id: retention
         env:
           STORAGE_BACKEND: local
-        run: python -m pipeline.cli retention
+        run: python -m pipeline.cli retention 2>&1 | tee retention.log
 
-      # WHY no alerting step yet: pipeline/runlog.py and real email alerting
-      # are Phase 8 deliverables that don't exist yet — a step calling code
-      # that isn't written would be exactly the kind of stub this build
-      # avoids. `if: failure()` steps here would just be a bare echo, which
-      # isn't a real alert either. This gets built properly in Phase 8.
+      # WHY this determines "which step" itself rather than hardcoding one:
+      # any of the four steps above can fail independently (all four have,
+      # for real, at different points during this build), and an alert that
+      # always says "the Ingest step" when dbt build actually broke would be
+      # actively misleading, not just unhelpful.
+      - name: Alert on failure
+        if: failure()
+        env:
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        run: |
+          if [ "${{ steps.ingest.outcome }}" = "failure" ]; then
+            FAILED_STEP="Ingest"; LOG_FILE="ingest.log"
+          elif [ "${{ steps.dbt_build.outcome }}" = "failure" ]; then
+            FAILED_STEP="dbt build"; LOG_FILE="dbt_build.log"
+          elif [ "${{ steps.check_freshness.outcome }}" = "failure" ]; then
+            FAILED_STEP="Check freshness"; LOG_FILE="check_freshness.log"
+          elif [ "${{ steps.retention.outcome }}" = "failure" ]; then
+            FAILED_STEP="Retention"; LOG_FILE="retention.log"
+          else
+            FAILED_STEP="unknown step"; LOG_FILE=""
+          fi
+          ERROR_TEXT=$( [ -n "$LOG_FILE" ] && [ -f "$LOG_FILE" ] && tail -20 "$LOG_FILE" || echo "no log captured" )
+          python -m pipeline.cli alert \
+            --hour "${{ steps.target_hour.outputs.hour }}" \
+            --step "$FAILED_STEP" \
+            --error "$ERROR_TEXT" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
