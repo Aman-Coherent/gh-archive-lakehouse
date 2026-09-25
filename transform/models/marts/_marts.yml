@@ -163,3 +163,16 @@ models:
             combination_of_columns:
             - date_key
             - event_hour
+
+  - name: mart_pipeline_health
+    description: >
+      Grain: exactly one row — the pipeline's current health snapshot.
+      Success rate over 24h/7d, p50/p95 run duration, consecutive failures
+      ending at the most recent run, and current gold data age.
+    columns:
+      - name: consecutive_failures
+        tests:
+          - not_null
+      - name: data_age_hours
+        tests:
+          - not_null

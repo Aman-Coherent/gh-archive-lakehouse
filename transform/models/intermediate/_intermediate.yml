@@ -21,3 +21,21 @@ models:
             combination_of_columns:
             - repo_id
             - pr_number
+
+  - name: int_pipeline_runs
+    description: >
+      Raw read of every logged ingest_hour() run (Phase 8). Grain: one row
+      per run_id. Skipped runs are absent by design — see pipeline/runlog.py.
+    columns:
+      - name: run_id
+        tests:
+          - unique
+          - not_null
+      - name: status
+        tests:
+          - not_null
+          - accepted_values:
+              config:
+                severity: warn
+              arguments:
+                values: [success, failed]

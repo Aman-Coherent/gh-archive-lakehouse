@@ -26,6 +26,8 @@ import pyarrow as pa
 import requests
 
 from pipeline.config import Settings
+from pipeline.logging_config import get_logger
+from pipeline.runlog import new_run_id, record_run
 from pipeline.storage import Storage
 
 # WHY explicit schema (not inferred): inference over ~50k dicts with sparse
@@ -205,6 +207,29 @@ def _download_and_parse(
     raise last_error
 
 
+def _log_run(run_id: str, started_at: datetime, result: IngestResult) -> None:
+    # WHY not logging status="skipped": a skip is a no-op — nothing changed,
+    # nothing was measured — and a backfill re-run over an already-completed
+    # range can skip dozens of hours at once. Logging those would dilute
+    # mart_pipeline_health's success-rate math with rows that don't
+    # represent real work, for no observability benefit.
+    if result.status == "skipped":
+        return
+    finished_at = datetime.now(UTC).replace(tzinfo=None)
+    record_run(
+        run_id=run_id,
+        started_at=started_at,
+        finished_at=finished_at,
+        status=result.status,
+        hour_processed=result.hour,
+        rows_read=result.rows_read,
+        rows_written=result.rows_kept,
+        malformed_rows=result.malformed_rows,
+        bytes_written=result.bytes_written,
+        error_message=result.error_message,
+    )
+
+
 def ingest_hour(dt: datetime, *, force: bool = False) -> IngestResult:
     """Download one GH Archive hour, project + flatten, write one Parquet partition.
 
@@ -216,11 +241,17 @@ def ingest_hour(dt: datetime, *, force: bool = False) -> IngestResult:
     if (dt.minute, dt.second, dt.microsecond) != (0, 0, 0):
         raise ValueError(f"ingest_hour requires an exact hour boundary, got {dt!r}")
 
+    run_id = new_run_id()
+    started_at = datetime.now(UTC).replace(tzinfo=None)
+    log = get_logger(__name__, run_id=run_id)
+    log.info("ingest_hour started for %s", dt.isoformat())
+
     settings = Settings.load()
     storage = Storage(settings)
     path = partition_path(dt)
 
     if storage.exists(path) and not force:
+        log.info("partition already exists, skipping: %s", path)
         return IngestResult(hour=dt, status="skipped")
 
     source_url = _source_url(dt)
@@ -232,18 +263,26 @@ def ingest_hour(dt: datetime, *, force: bool = False) -> IngestResult:
             source_url, event_types, ingested_at
         )
     except _UpstreamNotPublished:
-        return IngestResult(
-            hour=dt,
-            status="failed",
-            error_message=f"upstream file not published (404): {source_url}",
-        )
+        error_message = f"upstream file not published (404): {source_url}"
+        log.error(error_message)
+        result = IngestResult(hour=dt, status="failed", error_message=error_message)
+        _log_run(run_id, started_at, result)
+        return result
     except (requests.RequestException, gzip.BadGzipFile, OSError) as exc:
-        return IngestResult(hour=dt, status="failed", error_message=str(exc))
+        log.error("download/parse failed after retries: %s", exc)
+        result = IngestResult(hour=dt, status="failed", error_message=str(exc))
+        _log_run(run_id, started_at, result)
+        return result
+
+    log.info(
+        "parsed %d rows read, %d kept, %d malformed", rows_read, len(records), malformed_rows
+    )
 
     table = pa.Table.from_pylist(records, schema=BRONZE_SCHEMA)
     bytes_written = storage.write_parquet_atomic(table, path)
+    log.info("wrote %d bytes to %s", bytes_written, path)
 
-    return IngestResult(
+    result = IngestResult(
         hour=dt,
         status="success",
         rows_read=rows_read,
@@ -251,6 +290,8 @@ def ingest_hour(dt: datetime, *, force: bool = False) -> IngestResult:
         malformed_rows=malformed_rows,
         bytes_written=bytes_written,
     )
+    _log_run(run_id, started_at, result)
+    return result
 
 
 # WHY 0.25s: bounded concurrency (below) already caps simultaneous downloads at

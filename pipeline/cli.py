@@ -6,8 +6,10 @@ from datetime import datetime
 
 import typer
 
+from pipeline.alerting import send_failure_alert
 from pipeline.ingest import backfill as run_backfill
 from pipeline.ingest import ingest_hour
+from pipeline.logging_config import configure_logging
 from pipeline.quality import check_freshness
 from pipeline.retention import enforce_retention
 
@@ -22,6 +24,7 @@ def _main() -> None:
     # needed) — but `backfill` and `retention` join `ingest` as siblings in
     # later phases, and the spec's acceptance command names `ingest`
     # explicitly. A callback forces proper subcommand mode from the start.
+    configure_logging()
 
 
 def _parse_hour(value: str) -> datetime:
@@ -99,6 +102,18 @@ def retention() -> None:
     """Delete bronze partitions older than BRONZE_RETENTION_DAYS. Gold is never touched."""
     result = enforce_retention()
     typer.echo(result)
+
+
+@app.command()
+def alert(
+    hour: str = typer.Option(..., help="Hour being processed when the failure occurred."),
+    step: str = typer.Option(..., help="Which workflow step failed, e.g. 'dbt build'."),
+    error: str = typer.Option(..., help="The actual error text from that step."),
+    run_url: str = typer.Option(..., help="Direct link to the failed run."),
+) -> None:
+    """Send an actionable failure alert email to ALERT_EMAIL, if configured."""
+    sent = send_failure_alert(hour=hour, step=step, error=error, run_url=run_url)
+    typer.echo("alert sent" if sent else "ALERT_EMAIL not configured, skipped")
 
 
 if __name__ == "__main__":

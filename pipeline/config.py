@@ -25,6 +25,12 @@ _R2_REQUIRED_VARS = (
     "R2_BUCKET",
 )
 
+# WHY: alerting is only meaningful once you've said where to send it —
+# requiring SMTP_HOST when ALERT_EMAIL is set catches "I set the recipient
+# but forgot the mail server" at config-load time, not mid-alert when a real
+# failure is already happening and the alert itself silently can't send.
+_SMTP_REQUIRED_VARS = ("SMTP_HOST", "SMTP_PORT")
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -46,6 +52,11 @@ class Settings:
     event_types: tuple[str, ...]
     freshness_sla_hours: int
     alert_email: str | None
+    smtp_host: str | None
+    smtp_port: int | None
+    smtp_username: str | None
+    smtp_password: str | None = field(repr=False)
+    smtp_use_tls: bool
 
     def __repr__(self) -> str:
         # WHY: the acceptance check for this phase prints Settings directly,
@@ -55,6 +66,7 @@ class Settings:
         # even before secret-scanning kicks in.
         access_key = "***set***" if self.r2_access_key_id else None
         secret_key = "***redacted***" if self.r2_secret_access_key else None
+        smtp_password = "***redacted***" if self.smtp_password else None
         return (
             f"Settings(storage_backend={self.storage_backend!r}, "
             f"local_data_root={self.local_data_root!r}, "
@@ -65,7 +77,12 @@ class Settings:
             f"bronze_retention_days={self.bronze_retention_days}, "
             f"event_types={self.event_types}, "
             f"freshness_sla_hours={self.freshness_sla_hours}, "
-            f"alert_email={self.alert_email!r})"
+            f"alert_email={self.alert_email!r}, "
+            f"smtp_host={self.smtp_host!r}, "
+            f"smtp_port={self.smtp_port!r}, "
+            f"smtp_username={self.smtp_username!r}, "
+            f"smtp_password={smtp_password!r}, "
+            f"smtp_use_tls={self.smtp_use_tls})"
         )
 
     @classmethod
@@ -117,6 +134,23 @@ class Settings:
         )
         event_types = tuple(t.strip() for t in raw_event_types.split(",") if t.strip())
 
+        alert_email = os.getenv("ALERT_EMAIL") or None
+        smtp_host = os.getenv("SMTP_HOST") or None
+        raw_smtp_port = os.getenv("SMTP_PORT") or None
+
+        if alert_email:
+            missing_smtp = [
+                name
+                for name, value in zip(_SMTP_REQUIRED_VARS, (smtp_host, raw_smtp_port), strict=True)
+                if not value
+            ]
+            if missing_smtp:
+                raise ValueError(
+                    f"ALERT_EMAIL is set, so alerting requires: {', '.join(missing_smtp)}"
+                )
+
+        smtp_port = int(raw_smtp_port) if raw_smtp_port else None
+
         return cls(
             storage_backend=storage_backend,
             local_data_root=os.getenv("LOCAL_DATA_ROOT", "./data"),
@@ -127,7 +161,13 @@ class Settings:
             bronze_retention_days=bronze_retention_days,
             event_types=event_types,
             freshness_sla_hours=freshness_sla_hours,
-            alert_email=os.getenv("ALERT_EMAIL") or None,
+            alert_email=alert_email,
+            smtp_host=smtp_host,
+            smtp_port=smtp_port,
+            smtp_username=os.getenv("SMTP_USERNAME") or None,
+            smtp_password=os.getenv("SMTP_PASSWORD") or None,
+            smtp_use_tls=os.getenv("SMTP_USE_TLS", "true").strip().lower()
+            not in ("false", "0", ""),
         )
 
 
