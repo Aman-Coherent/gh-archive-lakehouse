@@ -7,6 +7,7 @@ from datetime import datetime
 import typer
 
 from pipeline.alerting import send_failure_alert
+from pipeline.dbt_results import record_dbt_results
 from pipeline.ingest import backfill as run_backfill
 from pipeline.ingest import ingest_hour
 from pipeline.logging_config import configure_logging
@@ -114,6 +115,18 @@ def alert(
     """Send an actionable failure alert email to ALERT_EMAIL, if configured."""
     sent = send_failure_alert(hour=hour, step=step, error=error, run_url=run_url)
     typer.echo("alert sent" if sent else "ALERT_EMAIL not configured, skipped")
+
+
+@app.command(name="record-dbt-results")
+def record_dbt_results_command(
+    path: str = typer.Option("transform/target/run_results.json", help="Path to run_results.json"),
+) -> None:
+    """Record a summary of dbt's own test results to gold, for the dashboard."""
+    counts = record_dbt_results(path)
+    if counts is None:
+        typer.echo(f"no run_results.json found at {path}, skipped")
+    else:
+        typer.echo(counts)
 
 
 if __name__ == "__main__":

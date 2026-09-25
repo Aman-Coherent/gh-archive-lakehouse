@@ -65,6 +65,17 @@ jobs:
           dbt deps --profiles-dir . 2>&1 | tee ../dbt_build.log
           dbt build --profiles-dir . --target dev 2>&1 | tee -a ../dbt_build.log
 
+      # WHY if: always(), not the default if: success(): dbt still writes
+      # run_results.json for whatever it managed to execute even when the
+      # build step above ultimately fails (e.g. a real test failure) — the
+      # Phase 9 dashboard's dbt test pass rate should reflect that partial
+      # run too, not just the runs that happened to pass entirely.
+      - name: Record dbt test results
+        if: always()
+        env:
+          STORAGE_BACKEND: local
+        run: python -m pipeline.cli record-dbt-results --path transform/target/run_results.json
+
       - name: Check freshness
         id: check_freshness
         env:
